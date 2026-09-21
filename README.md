@@ -86,6 +86,31 @@ still do the wrong thing (wrong light, runaway loop). The dry-run diff plus
 explicit human approval is the mitigation; nothing in code can replace that
 review. Scope is automations only; scripts and scenes remain read-only.
 
+### v3 — self-update (POST)
+
+| Endpoint | What it does |
+|---|---|
+| `POST /api/ha_readonly/self_update` | Check GitHub releases; optionally download and stage the latest |
+| `POST /api/ha_readonly/self_update/rollback` | Restore the most recent pre-update backup |
+
+Request body: `{ "dry_run": true }` (default true).
+
+- Dry run reports `current`, `latest`, and `update_available`. Nothing is
+  downloaded.
+- Applied (only when a newer release exists): downloads the release tarball,
+  backs up `custom_components/ha_readonly` to a timestamped directory next
+  to it, replaces the install with the new code, and verifies the new
+  manifest version matches the release tag.
+- Returns `restart_required: true` — new code only loads after a restart,
+  which is deliberately never triggered by this endpoint. Restarts interrupt
+  in-progress automations/scripts and take HA offline briefly, so that step
+  stays explicitly approved.
+- Rollback restores the most recent backup the same way (dry-run first).
+
+Trust note: this installs executable code from the owner's public GitHub
+repo into the HA process. Backup + rollback is the mitigation if a release
+is bad.
+
 ## Security model
 
 - Every endpoint requires an authenticated **admin** user (normal HA auth).
@@ -113,4 +138,6 @@ removal remain in the HA log.
 
 Reviewed against HA 2026.6.4 and 2026.7.2 source. v1 read endpoints tested on
 a live 2026.6.4 instance. v2 write endpoints are new in 0.2.0 and not yet
-tested on a live instance.
+tested on a live instance. v3 self-update is new in 0.3.0; its install and
+rollback file logic is unit-tested, but it has not yet run on a live
+instance.

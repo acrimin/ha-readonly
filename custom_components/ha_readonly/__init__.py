@@ -14,12 +14,14 @@ from homeassistant.core import HomeAssistant
 
 from .views import async_register_views
 from .writes import async_register_write_views
+from .self_update import async_register_self_update_views
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up from a config entry: register the API views."""
     async_register_views(hass)
     async_register_write_views(hass)
+    async_register_self_update_views(hass)
     return True
 
 
