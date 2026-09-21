@@ -8,7 +8,7 @@ v1 constraints (deliberate, do not relax without a new design review):
 - All data comes from Home Assistant's in-memory helpers. No file access,
   no .storage reads, no service calls, no state changes.
 
-Verified against HA 2026.7.2 source (target install: 2026.6.4):
+Verified against HA 2026.6.4 source (also reviewed against 2026.7.2):
 - Auth: request["hass_user"] is set by the auth middleware
   (homeassistant/components/http/auth.py); KEY_HASS_USER = "hass_user"
   (homeassistant/components/http/const.py).
@@ -394,7 +394,11 @@ class RepairsView(_ReadonlyView):
     name = API_BASE + ":repairs"
 
     async def _get_data(self, hass, request, **kwargs):
-        issues = list(async_get_issue_registry(hass).issues.items())
+        issues = [
+            ((domain, issue_id), issue)
+            for (domain, issue_id), issue in async_get_issue_registry(hass).issues.items()
+            if issue.active
+        ]
         if len(issues) > _MAX_ITEMS:
             raise _ViewError(500, "too_many_items")
         return {
