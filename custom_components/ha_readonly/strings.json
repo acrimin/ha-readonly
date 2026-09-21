@@ -1,0 +1,1 @@
+{"config":{"abort":{"single_instance_allowed":"HA Readonly Inspector is already set up. Only one instance is needed."},"step":{"user":{"description":"Registers the admin-only, read-only inspection API. No options are needed.","title":"HA Readonly Inspector"}}}}
