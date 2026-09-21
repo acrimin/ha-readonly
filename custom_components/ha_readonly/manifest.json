@@ -1,1 +1,14 @@
-{"codeowners":["@acrimin"],"config_flow":true,"documentation":"https://github.com/acrimin/ha-readonly","domain":"ha_readonly","integration_type":"service","iot_class":"local_polling","issue_tracker":"https://github.com/acrimin/ha-readonly/issues","name":"HA Readonly Inspector","single_config_entry":true,"version":"0.1.3"}
+{
+  "codeowners": [
+    "@acrimin"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/acrimin/ha-readonly",
+  "domain": "ha_readonly",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/acrimin/ha-readonly/issues",
+  "name": "HA Readonly Inspector",
+  "single_config_entry": true,
+  "version": "0.2.0"
+}
