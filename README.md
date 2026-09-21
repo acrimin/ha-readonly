@@ -92,6 +92,7 @@ review. Scope is automations only; scripts and scenes remain read-only.
 |---|---|
 | `POST /api/ha_readonly/self_update` | Check GitHub releases; optionally download and stage the latest |
 | `POST /api/ha_readonly/self_update/rollback` | Restore the most recent pre-update backup |
+| `POST /api/ha_readonly/restart` | Restart Home Assistant (dry-run reports what's mid-run first) |
 
 Request body: `{ "dry_run": true }` (default true).
 
@@ -101,10 +102,10 @@ Request body: `{ "dry_run": true }` (default true).
   backs up `custom_components/ha_readonly` to a timestamped directory next
   to it, replaces the install with the new code, and verifies the new
   manifest version matches the release tag.
-- Returns `restart_required: true` — new code only loads after a restart,
-  which is deliberately never triggered by this endpoint. Restarts interrupt
-  in-progress automations/scripts and take HA offline briefly, so that step
-  stays explicitly approved.
+- Returns `restart_required: true` — new code only loads after a restart.
+  Restart via `POST /api/ha_readonly/restart`: dry-run lists running
+  scripts and active automations first so you can judge safety. Restarts
+  are never triggered automatically; every one stays explicitly approved.
 - Rollback restores the most recent backup the same way (dry-run first).
 
 Trust note: this installs executable code from the owner's public GitHub
@@ -140,4 +141,4 @@ Reviewed against HA 2026.6.4 and 2026.7.2 source. v1 read endpoints tested on
 a live 2026.6.4 instance. v2 write endpoints are new in 0.2.0 and not yet
 tested on a live instance. v3 self-update is new in 0.3.0; its install and
 rollback file logic is unit-tested, but it has not yet run on a live
-instance.
+instance. v4 restart endpoint is new in 0.4.0 and likewise untested live.

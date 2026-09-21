@@ -13,10 +13,11 @@ Design, mirroring the v2 write guardrails:
   to it, extracts the new code over the install, and verifies the new
   manifest version matches the release tag.
 - A rollback endpoint restores the most recent backup (also dry-run first).
-- Neither endpoint restarts Home Assistant. New code only loads after a
-  restart, which is deliberately left as a separate, explicitly approved
-  step: a restart interrupts in-progress automations/scripts and takes HA
-  offline briefly, so it must never happen unprompted.
+- A rollback endpoint restores the most recent backup (also dry-run first).
+- Restart is available via POST /api/ha_readonly/restart (dry-run reports
+  what's currently mid-run first), but it is never triggered automatically.
+  Every restart stays explicitly approved: a restart interrupts in-progress
+  automations/scripts and takes HA offline briefly.
 
 Trust note: this downloads and installs executable code from a public
 GitHub repo into the HA process. The repo is the owner's own; a compromise
@@ -38,7 +39,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 from homeassistant.components.http import HomeAssistantView
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Context, HomeAssistant
 
 try:
     from homeassistant.components.http.const import KEY_HASS_USER
@@ -311,9 +312,81 @@ class SelfUpdateRollbackView(_SelfUpdateBase):
             )
 
 
+class RestartView(_SelfUpdateBase):
+    """Restart Home Assistant, e.g. to load a staged update.
+
+    Dry run (default) reports what is currently mid-run so the caller can
+    judge safety: running scripts and automations with active runs. Applied
+    calls HA's own ``homeassistant.restart`` service with the requesting
+    admin's context. The HTTP response may not arrive if the server goes
+    down first; verify by polling ``/api/ha_readonly/info`` afterwards.
+    """
+
+    url = "/api/ha_readonly/restart"
+    name = "api:ha_readonly:restart"
+
+    async def post(self, request):
+        user = await self._authed_user(request)
+        if user is None:
+            return self.json({"error": "admin_required"}, status_code=403)
+        hass: HomeAssistant = request.app["hass"]
+        try:
+            dry_run = await self._dry_run(request)
+            return await self._handle(hass, user, request, dry_run)
+        except _ViewError as err:
+            self._audit(user, request, "restart", False, err.status)
+            return self.json({"error": err.message}, status_code=err.status)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("%s: unhandled restart error", DOMAIN)
+            self._audit(user, request, "restart", False, 500)
+            return self.json({"error": "internal_error"}, status_code=500)
+
+    async def _handle(self, hass, user, request, dry_run: bool):
+        running_scripts = [
+            s.entity_id
+            for s in hass.states.async_all("script")
+            if s.state == "on"
+        ]
+        active_automations = [
+            s.entity_id
+            for s in hass.states.async_all("automation")
+            if (s.attributes.get("current") or 0) > 0
+        ]
+
+        if dry_run:
+            self._audit(user, request, "restart check", False, 200)
+            return self.json(
+                {
+                    "result": "dry_run",
+                    "running_scripts": running_scripts,
+                    "active_automations": active_automations,
+                    "safe_to_restart": not running_scripts
+                    and not active_automations,
+                }
+            )
+
+        self._audit(user, request, "restart", True, 200)
+        # blocking=False: queue the restart and return; the server may go
+        # down before the response flushes, which is expected.
+        await hass.services.async_call(
+            "homeassistant",
+            "restart",
+            {},
+            blocking=False,
+            context=Context(user_id=user.id),
+        )
+        return self.json(
+            {
+                "result": "restarting",
+                "note": "Verify by polling /api/ha_readonly/info until it responds.",
+            }
+        )
+
+
 _SELF_UPDATE_VIEWS = (
     SelfUpdateView,
     SelfUpdateRollbackView,
+    RestartView,
 )
 
 
