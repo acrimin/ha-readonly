@@ -8,6 +8,12 @@ v1 constraints (deliberate, do not relax without a new design review):
 - All data comes from Home Assistant's in-memory helpers. No file access,
   no .storage reads, no service calls, no state changes.
 
+Deliberate exception (added v0.6.0, design-reviewed with the user):
+- GET /api/ha_readonly/logs reads the HA log file (home-assistant.log).
+  The log is append-only diagnostic output; reading it is what lets an admin
+  diagnose a failing system (including this integration) without shell access.
+  Read-only, admin-only, fixed path under the config dir (no traversal).
+
 Verified against HA 2026.6.4 source (also reviewed against 2026.7.2):
 - Auth: request["hass_user"] is set by the auth middleware
   (homeassistant/components/http/auth.py); KEY_HASS_USER = "hass_user"
@@ -23,6 +29,7 @@ Verified against HA 2026.6.4 source (also reviewed against 2026.7.2):
 from __future__ import annotations
 
 import logging
+import os
 import re
 
 from homeassistant.components.http import HomeAssistantView
@@ -416,6 +423,107 @@ class RepairsView(_ReadonlyView):
         }
 
 
+_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+_MAX_LOG_LINES = 2000
+_LOG_SCAN_MULTIPLE = 10
+_LOG_SCAN_CAP = 20000
+_LOG_CHUNK = 8192
+
+
+def _tail_lines(path: str, n: int) -> tuple[list[str], bool]:
+    """Read the last n lines of a text file, efficiently for large files.
+
+    Returns (lines, truncated) where truncated means the file held more
+    than n lines. Reads from the end in chunks so a multi-GB log does not
+    get slurped into memory.
+    """
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        pos = fh.tell()
+        buf = b""
+        # n+1 newlines guarantees we captured n full lines (or hit BOF).
+        while pos > 0 and buf.count(b"\n") <= n:
+            step = min(_LOG_CHUNK, pos)
+            pos -= step
+            fh.seek(pos)
+            buf = fh.read(step) + buf
+    lines = buf.decode("utf-8", errors="replace").splitlines()
+    return lines[-n:], len(lines) > n
+
+
+def _filter_log_lines(
+    lines: list[str], level: str | None, search: str | None
+) -> list[str]:
+    """Filter log lines by level token and/or case-insensitive substring."""
+    out = lines
+    if level:
+        token = f" {level} "
+        out = [ln for ln in out if token in ln.upper()]
+    if search:
+        needle = search.lower()
+        out = [ln for ln in out if needle in ln.lower()]
+    return out
+
+
+class LogsView(_ReadonlyView):
+    """Tail and filter the Home Assistant log file.
+
+    Query params:
+    - lines (default 200, max 2000): how many matching lines to return.
+    - level (optional): DEBUG, INFO, WARNING, ERROR, CRITICAL.
+    - search (optional): case-insensitive substring filter.
+
+    The scan window is lines*10 (capped) so filters still find matches in
+    noisy logs; the response reports whether the file extends beyond it.
+    """
+
+    url = API_BASE + "/logs"
+    name = "api:ha_readonly:logs"
+
+    async def _get_data(self, hass: HomeAssistant, request):
+        query = request.query
+        try:
+            want = int(query.get("lines", "200"))
+        except ValueError:
+            raise _ViewError(400, "lines_must_be_integer")
+        if want < 1 or want > _MAX_LOG_LINES:
+            raise _ViewError(400, f"lines_must_be_1_to_{_MAX_LOG_LINES}")
+
+        level = query.get("level")
+        if level:
+            level = level.upper()
+            if level not in _LOG_LEVELS:
+                raise _ViewError(
+                    400, f"level_must_be_one_of_{'_'.join(_LOG_LEVELS).lower()}"
+                )
+        search = query.get("search") or None
+        if search and len(search) > 200:
+            raise _ViewError(400, "search_too_long")
+
+        log_path = hass.config.path("home-assistant.log")
+        if not os.path.isfile(log_path):
+            raise _ViewError(404, "log_file_not_found")
+
+        scan = min(want * _LOG_SCAN_MULTIPLE, _LOG_SCAN_CAP)
+
+        def _read() -> tuple[list[str], bool]:
+            raw, truncated = _tail_lines(log_path, scan)
+            return _filter_log_lines(raw, level, search), truncated
+
+        matched, truncated = await hass.async_add_executor_job(_read)
+        return {
+            "result": "ok",
+            "path": log_path,
+            "lines_requested": want,
+            "lines_scanned": scan,
+            "lines_matched": len(matched),
+            "truncated": truncated,
+            "level": level,
+            "search": search,
+            "lines": matched[-want:],
+        }
+
+
 _VIEWS = (
     InfoView,
     AutomationListView,
@@ -429,6 +537,7 @@ _VIEWS = (
     AreaRegistryView,
     StatesView,
     RepairsView,
+    LogsView,
 )
 
 

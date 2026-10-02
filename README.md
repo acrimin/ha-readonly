@@ -24,6 +24,7 @@ frontend itself uses.
 | `/api/ha_readonly/registries/areas` | Area registry dump |
 | `/api/ha_readonly/states?domain=&limit=` | Entity states (bounded, default 1000) |
 | `/api/ha_readonly/repairs` | Active repair issues (metadata only) |
+| `/api/ha_readonly/logs?lines=&level=&search=` | Tail + filter home-assistant.log (admin, read-only) |
 
 `{id}` accepts an entity id (`automation.foo`) or a unique id.
 
@@ -206,4 +207,6 @@ rollback file logic is unit-tested, but it has not yet run on a live
 instance. v4 restart endpoint is new in 0.4.0 and likewise untested live.
 v5 script-write and rename endpoints are new in 0.5.0; their file and
 request-validation logic is unit-tested locally (19 tests), but they have
-not yet run on a live instance.
+not yet run on a live instance. v6 log-reading endpoint is new in 0.6.0;
+its tail/filter helpers are unit-tested locally, but it has not yet run on
+a live instance.
