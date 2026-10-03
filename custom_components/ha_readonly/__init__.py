@@ -8,6 +8,9 @@ v2: guardrailed automation writes (create/update/delete) that reuse the exact
 v0.7.0: guardrailed generic service calls, file tools under the config dir,
     and Lovelace dashboard read/write. Same rails: admin-only, dry-run
     defaults, audit logging, backups before applied writes.
+v0.7.1: file write/edit endpoint (POST /api/ha_readonly/files/write).
+v0.7.2: self-update removed. HACS is the single update mechanism;
+    use the update.install service (without backup flag) via API.
 """
 
 from __future__ import annotations
@@ -17,7 +20,6 @@ from homeassistant.core import HomeAssistant
 
 from .views import async_register_views
 from .writes import async_register_write_views
-from .self_update import async_register_self_update_views
 from .services import async_register_service_views
 from .files import async_register_file_views
 from .lovelace import async_register_lovelace_views
@@ -27,7 +29,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up from a config entry: register the API views."""
     async_register_views(hass)
     async_register_write_views(hass)
-    async_register_self_update_views(hass)
     async_register_service_views(hass)
     async_register_file_views(hass)
     async_register_lovelace_views(hass)
