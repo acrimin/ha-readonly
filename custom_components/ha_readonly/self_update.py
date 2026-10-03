@@ -9,9 +9,10 @@ Design, mirroring the v2 write guardrails:
   INTEGRATION_VERSION and reports whether an update is available. No
   download, no file changes.
 - Applied: downloads the release tarball, backs up the installed
-  ``custom_components/ha_readonly`` directory to a timestamped backup next
-  to it, extracts the new code over the install, and verifies the new
-  manifest version matches the release tag.
+  ``custom_components/ha_readonly`` directory to a timestamped backup in
+  ``<config>/ha_readonly_backups/`` (outside custom_components/, so HA's
+  integration loader never discovers it), extracts the new code over the
+  install, and verifies the new manifest version matches the release tag.
 - A rollback endpoint restores the most recent backup (also dry-run first).
 - A rollback endpoint restores the most recent backup (also dry-run first).
 - Restart is available via POST /api/ha_readonly/restart (dry-run reports
@@ -78,14 +79,23 @@ def _download(url: str, dest: str) -> None:
         shutil.copyfileobj(resp, fh)
 
 
-def _install_from_tarball(tarball_path: str, install_dir: str) -> tuple[str, str]:
+def _install_from_tarball(
+    tarball_path: str, install_dir: str, backups_dir: str
+) -> tuple[str, str]:
     """Backup current install, extract new code over it.
 
     Returns (backup_dir, new_version). Raises _ViewError on any problem,
     leaving the install untouched (backup happens first, extract second).
+
+    Backups live in <config>/ha_readonly_backups/, NOT next to install_dir:
+    a backup inside custom_components/ contains a manifest.json that HA's
+    integration loader discovers, and it fatally breaks setup trying to
+    import it (seen 2026-10-03: "No module named
+    'custom_components.ha_readonly.bak-...'").
     """
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup_dir = f"{install_dir}.bak-{stamp}"
+    os.makedirs(backups_dir, exist_ok=True)
+    backup_dir = os.path.join(backups_dir, f"ha_readonly.bak-{stamp}")
     shutil.copytree(install_dir, backup_dir)
 
     try:
@@ -121,8 +131,8 @@ def _install_from_tarball(tarball_path: str, install_dir: str) -> tuple[str, str
     return backup_dir, new_version
 
 
-def _latest_backup(install_dir: str) -> str | None:
-    candidates = glob.glob(f"{install_dir}.bak-*")
+def _latest_backup(backups_dir: str) -> str | None:
+    candidates = glob.glob(os.path.join(backups_dir, "ha_readonly.bak-*"))
     if not candidates:
         return None
     return max(candidates, key=os.path.getmtime)
@@ -233,8 +243,9 @@ class SelfUpdateView(_SelfUpdateBase):
                     )
                 except Exception as err:  # noqa: BLE001
                     raise _ViewError(502, f"download_failed: {err}") from err
+                backups_dir = hass.config.path("ha_readonly_backups")
                 backup_dir, new_version = await hass.async_add_executor_job(
-                    _install_from_tarball, tarball_path, install_dir
+                    _install_from_tarball, tarball_path, install_dir, backups_dir
                 )
 
             if _parse_version(new_version) != latest:
@@ -281,8 +292,9 @@ class SelfUpdateRollbackView(_SelfUpdateBase):
     async def _handle(self, hass, user, request, dry_run: bool):
         install_dir = hass.config.path("custom_components", "ha_readonly")
         async with self._mutation_lock:
+            backups_dir = hass.config.path("ha_readonly_backups")
             backup_dir = await hass.async_add_executor_job(
-                _latest_backup, install_dir
+                _latest_backup, backups_dir
             )
             if backup_dir is None:
                 raise _ViewError(404, "no_backup_found")
