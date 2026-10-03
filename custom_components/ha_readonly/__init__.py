@@ -23,6 +23,7 @@ from .writes import async_register_write_views
 from .services import async_register_service_views
 from .files import async_register_file_views
 from .lovelace import async_register_lovelace_views
+from .entities import async_register_entity_views
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -32,6 +33,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async_register_service_views(hass)
     async_register_file_views(hass)
     async_register_lovelace_views(hass)
+    async_register_entity_views(hass)
     return True
 
 
