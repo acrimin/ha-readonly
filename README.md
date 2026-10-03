@@ -21,6 +21,12 @@ frontend itself uses.
 
 ## What it exposes
 
+> **v0.7.0 — broader powers:** guardrailed generic service calls, file tools
+> under the config dir (list/read/delete-to-trash), and Lovelace dashboard
+> read/write. Same rails throughout: admin-only, dry-run defaults true,
+> audit-logged, backups before applied writes.
+
+
 ### v1 — read-only (GET)
 
 | Endpoint | What you get |
@@ -109,6 +115,22 @@ At least one of `device_name` / `entity_name` must be present (each with
 its id). A `null` name clears the custom name, exactly like the HA UI.
 Dry-run is a pure no-op that still returns the would-be before/after for
 each rename.
+
+### v0.7.0 — broader powers
+
+| Endpoint | What it does |
+|---|---|
+| `POST /api/ha_readonly/services/{domain}/{service}` | Call any HA service (dry-run validates + echoes) |
+| `GET /api/ha_readonly/files?path=` | List a directory under the config dir |
+| `GET /api/ha_readonly/files/read?path=` | Read a text file (bounded) |
+| `POST /api/ha_readonly/files/delete` | Delete to trash (`<config>/ha_readonly_backups/trash/`), never unlink |
+| `GET /api/ha_readonly/lovelace` | Read the default dashboard config |
+| `POST /api/ha_readonly/lovelace/write` | Replace the dashboard config (backup + diff) |
+
+Service-call body: `{ "dry_run": true, "target": {"entity_id": [...]}, "data": {...} }`.
+File-delete body: `{ "dry_run": true, "path": "<relative>", "confirm": "yes-i-know" }`
+(`confirm` required only under `custom_components/`; `.storage` is refused outright.)
+Lovelace-write body: `{ "dry_run": true, "config": {...} }`.
 
 ## How writes stay safe
 
