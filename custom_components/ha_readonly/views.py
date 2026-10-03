@@ -500,9 +500,23 @@ class LogsView(_ReadonlyView):
         if search and len(search) > 200:
             raise _ViewError(400, "search_too_long")
 
-        log_path = hass.config.path("home-assistant.log")
-        if not os.path.isfile(log_path):
-            raise _ViewError(404, "log_file_not_found")
+        candidates = [
+            hass.config.path("home-assistant.log"),
+            os.path.join(hass.config.config_dir, "home-assistant.log.1"),
+        ]
+        log_path = next((c for c in candidates if os.path.isfile(c)), None)
+        if log_path is None:
+            try:
+                dir_list = sorted(
+                    f for f in os.listdir(hass.config.config_dir)
+                    if f.endswith(".log") or f.endswith(".log.1")
+                )
+            except OSError:
+                dir_list = []
+            raise _ViewError(
+                500,
+                f"log_file_not_found tried={candidates} logs_in_config={dir_list}",
+            )
 
         scan = min(want * _LOG_SCAN_MULTIPLE, _LOG_SCAN_CAP)
 
