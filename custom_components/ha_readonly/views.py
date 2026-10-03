@@ -478,7 +478,7 @@ class LogsView(_ReadonlyView):
     """
 
     url = API_BASE + "/logs"
-    name = "api:ha_readonly:logs"
+    name = API_BASE + ":logs"
 
     async def _get_data(self, hass: HomeAssistant, request):
         query = request.query

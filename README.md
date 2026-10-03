@@ -6,7 +6,9 @@ writes and device/entity renames. The repo name is historical: v1 was
 strictly read-only; v2+ add writes that reuse the exact save path the HA
 frontend itself uses.
 
-> **v0.6.2 note:** the v0.5.0 startup failure is diagnosed — it was never the
+> **v0.6.3 note:** v0.6.2 fixed the backup-location bug; v0.6.3 fixes the /logs endpoint 404 (its route `name` did not follow the integration’s convention, so aiohttp never matched it).
+>
+> **v0.6.2 note (superseded):** the v0.5.0 startup failure is diagnosed — it was never the
 > v0.5.0 code. The self-update backup directory
 > (`custom_components/ha_readonly.bak-<timestamp>/`, a full copy including
 > `manifest.json`) was discovered by HA's integration loader, which fatally
