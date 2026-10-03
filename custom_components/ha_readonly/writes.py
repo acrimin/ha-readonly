@@ -1,47 +1,32 @@
-"""Guardrailed write API for Home Assistant automations (v2), scripts (v5),
-and device/entity renames (v5).
+"""Guardrailed write API for Home Assistant automations (v2).
 
-Automations and scripts follow the same save path the HA frontend itself
-uses, verified against HA 2026.6.4 source:
+This module implements the same save path the HA frontend itself uses,
+verified against HA 2026.6.4 source:
 
 - Persistence: UI-created automations are written to ``automations.yaml``
-  (``homeassistant.config.AUTOMATION_CONFIG_PATH``); UI-created scripts are
-  written to ``scripts.yaml`` (``homeassistant.config.SCRIPT_CONFIG_PATH``)
-  as a dict keyed by object id. This module writes to the exact same files.
-  No .storage access, no raw config edits elsewhere.
+  (``homeassistant.config.AUTOMATION_CONFIG_PATH``). This module writes to
+  the exact same file. No .storage access, no raw config edits elsewhere.
 - Validation: every config is validated with HA's own
-  ``async_validate_config_item`` (``automation.config`` /
-  ``script.config``) before anything touches disk. Invalid configs are
-  rejected with 400 and nothing is written.
+  ``homeassistant.components.automation.config.async_validate_config_item``
+  before anything touches disk. Invalid configs are rejected with 400 and
+  nothing is written.
 - Write: atomic YAML write (``write_utf8_file_atomic``) under an asyncio
   mutation lock, mirroring ``homeassistant/components/config/view.py``.
-- Reload: after an applied automation create/update, only that single
-  automation is reloaded via the ``automation.reload`` service with
-  ``{id: key}`` (the UI's own post-write hook). Scripts have no per-item
-  reload in HA, so the UI reloads all scripts (``script.reload``) — this
-  module does the same. Deletes remove the entity-registry entry like the
-  UI does, with no reload.
-
-Renames use the exact registry calls the HA frontend's rename dialogs use
-(verified in HA 2026.6.4 source):
-- device: ``device_registry.async_update_device(device_id, name_by_user=...)``
-  (``homeassistant/components/config/device_registry.py``)
-- entity: ``entity_registry.async_update_entity(entity_id, name=...)``
-  (``homeassistant/components/config/entity_registry.py``)
-Registry-backed: no YAML file is touched, so no .bak backup applies — HA
-persists .storage atomically itself.
+- Reload: after an applied create/update, only that single automation is
+  reloaded via the ``automation.reload`` service with ``{id: key}`` (the
+  UI's own post-write hook). Other automations are untouched. Deletes
+  remove the entity-registry entry like the UI does, with no reload.
 
 Additional guardrails this module adds on top of the UI's path:
-- ``dry_run`` defaults to true. Nothing is written, backed up, reloaded, or
-  renamed unless the caller explicitly passes ``"dry_run": false``.
-- Every applied YAML write first backs up the file to a timestamped
+- ``dry_run`` defaults to true. Nothing is written, backed up, or reloaded
+  unless the caller explicitly passes ``"dry_run": false``.
+- Every applied write first backs up ``automations.yaml`` to a timestamped
   ``.bak`` file next to the original.
 - Every attempt (dry-run or applied) is audit-logged with user, key,
   dry_run/applied flag, and status. Request bodies are never logged.
 
 Deliberate scope limits (do not widen without a design review):
-- Automations, scripts, and device/entity renames only. No scenes or other
-  domains.
+- Automations only. No scripts, scenes, or other domains.
 - Admin-only (requires_auth + is_admin), like the v1 read API.
 - Validation is syntactic (HA's schema). A config can be valid yet do the
   wrong thing (wrong light, runaway loop). The dry-run diff plus explicit
@@ -61,15 +46,11 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.components.http import HomeAssistantView
-from homeassistant.config import AUTOMATION_CONFIG_PATH, SCRIPT_CONFIG_PATH
+from homeassistant.config import AUTOMATION_CONFIG_PATH
 from homeassistant.const import CONF_ID, SERVICE_RELOAD
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import (
-    config_validation as cv,
-    device_registry as dr,
-    entity_registry as er,
-)
+from homeassistant.helpers import config_validation as cv, entity_registry as er
 from homeassistant.util.file import write_utf8_file_atomic
 from homeassistant.util.yaml import dump, load_yaml
 
@@ -83,15 +64,6 @@ except ImportError:  # pragma: no cover - automation component missing
     async_validate_config_item = None  # type: ignore[assignment]
 
 try:
-    # Verified in HA 2026.6.4 source:
-    # homeassistant/components/script/config.py
-    from homeassistant.components.script.config import (
-        async_validate_config_item as async_validate_script_config_item,
-    )
-except ImportError:  # pragma: no cover - script component missing
-    async_validate_script_config_item = None  # type: ignore[assignment]
-
-try:
     from homeassistant.components.http.const import KEY_HASS_USER
 except ImportError:  # pragma: no cover - very old HA
     KEY_HASS_USER = "hass_user"
@@ -102,7 +74,6 @@ from .views import _ViewError, _validate_ident
 _LOGGER = logging.getLogger(__name__)
 
 _AUTOMATION_DOMAIN = "automation"
-_SCRIPT_DOMAIN = "script"
 _DIFF_MAX_LINES = 200
 
 
@@ -119,25 +90,7 @@ def _read_yaml(path: str) -> list[dict[str, Any]]:
     return data
 
 
-def _read_scripts_yaml(path: str) -> dict[str, dict[str, Any]]:
-    """Read scripts.yaml in an executor thread. Missing/empty -> {}.
-
-    Unlike automations.yaml (a list), scripts.yaml is a dict keyed by
-    object id. Verified in HA 2026.6.4 source:
-    homeassistant/components/config/script.py (EditScriptConfigView).
-    """
-    try:
-        data = load_yaml(path)
-    except FileNotFoundError:
-        return {}
-    if not data:
-        return {}
-    if not isinstance(data, dict):
-        raise _ViewError(500, "scripts_yaml_unexpected_shape")
-    return data
-
-
-def _write_yaml(path: str, data: list[dict[str, Any]] | dict[str, Any]) -> None:
+def _write_yaml(path: str, data: list[dict[str, Any]]) -> None:
     """Atomic YAML write, mirroring homeassistant/components/config/view.py."""
     # Dump before opening the file: a dump error must not truncate it.
     contents = dump(data)
@@ -193,64 +146,6 @@ def _apply_write_value(
     if not updated:
         data.append(updated_value)
     return previous
-
-
-def _apply_script_write(
-    data: dict[str, dict[str, Any]], config_key: str, new_value: dict[str, Any]
-) -> dict[str, Any] | None:
-    """Insert or replace one script, mirroring EditScriptConfigView.
-
-    The UI does a plain assignment (``data[config_key] = new_value``); unlike
-    automations there is no id backfill because the dict key IS the id.
-    Returns the previous config for that key, or None if it is new.
-    """
-    previous = data.get(config_key)
-    data[config_key] = new_value
-    return previous
-
-
-def _clean_name(value: Any, field: str) -> str | None:
-    """Validate one rename name. None clears the custom name (like the UI)."""
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value.strip():
-        raise _ViewError(400, f"{field}_must_be_non_empty_string")
-    return value
-
-
-def _parse_rename_body(body: Any) -> list[tuple[str, str, str | None]]:
-    """Validate a rename request body into (target, id, name) operations.
-
-    Body shape::
-
-        {
-          "dry_run": true,
-          "device_id": "<device registry id>",
-          "device_name": "<new device name>" | null,
-          "entity_id": "<entity_id>",
-          "entity_name": "<new friendly name>" | null,
-        }
-
-    At least one of ``device_name`` / ``entity_name`` must be present; a
-    null name clears the custom name, exactly like the HA UI. Pure function
-    (no HA access) so it can be unit-tested.
-    """
-    if not isinstance(body, dict):
-        raise _ViewError(400, "invalid_json")
-    ops: list[tuple[str, str, str | None]] = []
-    if "device_name" in body:
-        device_id = body.get("device_id")
-        if not device_id or not isinstance(device_id, str):
-            raise _ViewError(400, "device_id_required")
-        ops.append(("device", device_id, _clean_name(body["device_name"], "device_name")))
-    if "entity_name" in body:
-        entity_id = body.get("entity_id")
-        if not entity_id or not isinstance(entity_id, str):
-            raise _ViewError(400, "entity_id_required")
-        ops.append(("entity", entity_id, _clean_name(body["entity_name"], "entity_name")))
-    if not ops:
-        raise _ViewError(400, "nothing_to_rename")
-    return ops
 
 
 def _unified_diff(previous: dict | None, new: dict | None, key: str) -> list[str]:
@@ -509,319 +404,9 @@ class AutomationDeleteView(_WriteView):
         )
 
 
-class ScriptWriteView(_WriteView):
-    """Create or update one script (upsert), mirroring the UI's config view.
-
-    Verified against HA 2026.6.4 source
-    (``homeassistant/components/config/script.py``,
-    ``homeassistant/components/script/config.py``):
-    - scripts.yaml is a dict keyed by object id (not a list);
-    - the UI validates with ``script.config.async_validate_config_item``
-      and a ``cv.slug`` key schema, then does ``data[key] = new_value``;
-    - the UI's post-write hook reloads ALL scripts (``script.reload`` has
-      no per-item mode, unlike ``automation.reload``). This view does the
-      same and reports ``ok_write_reload_failed`` if the reload call fails
-      after the file was already saved.
-    """
-
-    url = API_BASE + "/scripts/write/{config_key}"
-    name = "api:ha_readonly:scripts:write"
-
-    async def post(self, request, config_key: str):
-        user = await self._authed_user(request)
-        if user is None:
-            return self.json({"error": "admin_required"}, status_code=403)
-        hass: HomeAssistant = request.app["hass"]
-
-        try:
-            return await self._handle(hass, user, request, config_key)
-        except _ViewError as err:
-            self._audit(user, request, config_key, False, err.status)
-            return self.json({"error": err.message}, status_code=err.status)
-        except Exception:  # noqa: BLE001 - never leak tracebacks to clients
-            _LOGGER.exception("%s: unhandled script write error for %s", DOMAIN, request.path)
-            self._audit(user, request, config_key, False, 500)
-            return self.json({"error": "internal_error"}, status_code=500)
-
-    async def _handle(self, hass, user, request, config_key: str):
-        if not _validate_ident(config_key):
-            raise _ViewError(400, "invalid_id")
-        try:
-            cv.slug(config_key)  # UI key schema; result discarded, like the UI
-        except vol.Invalid as err:
-            raise _ViewError(400, f"key_malformed: {err}") from err
-        if async_validate_script_config_item is None:
-            raise _ViewError(503, "script_component_unavailable")
-
-        try:
-            body = await request.json()
-        except ValueError as err:
-            raise _ViewError(400, "invalid_json") from err
-        if not isinstance(body, dict) or not isinstance(body.get("script"), dict):
-            raise _ViewError(400, "body_must_contain_script_object")
-        new_config = body["script"]
-        dry_run = body.get("dry_run", True)
-        if not isinstance(dry_run, bool):
-            raise _ViewError(400, "dry_run_must_be_boolean")
-
-        # HA's own validation, same as the frontend uses. Rejects before
-        # anything touches disk. The validated config (with defaults) is
-        # discarded; the caller's raw config is stored, like the UI.
-        try:
-            await async_validate_script_config_item(hass, config_key, new_config)
-        except (vol.Invalid, HomeAssistantError) as err:
-            raise _ViewError(400, f"validation_failed: {err}") from err
-
-        path = hass.config.path(SCRIPT_CONFIG_PATH)
-        async with self._mutation_lock:
-            current = await hass.async_add_executor_job(_read_scripts_yaml, path)
-            previous = _apply_script_write(current, config_key, new_config)
-            new_value = current[config_key]
-            diff = _unified_diff(previous, new_value, config_key)
-            changed = previous != new_value
-
-            backup_path: str | None = None
-            applied = False
-            if not dry_run and changed:
-                try:
-                    backup_path = await hass.async_add_executor_job(_backup_yaml, path)
-                except FileNotFoundError:
-                    # scripts.yaml did not exist yet; nothing to back up.
-                    backup_path = None
-                await hass.async_add_executor_job(_write_yaml, path, current)
-                applied = True
-
-        status = 200
-        self._audit(user, request, config_key, applied, status)
-
-        if dry_run or not changed:
-            return self.json(
-                {
-                    "result": "dry_run" if dry_run else "ok_no_change",
-                    "key": config_key,
-                    "changed": changed,
-                    "diff": diff,
-                    "previous": previous,
-                    "new": new_value,
-                },
-                status_code=status,
-            )
-
-        # Applied: reload scripts, like the UI's post-write hook. HA has no
-        # per-script reload, so every script is reloaded (the UI behaves the
-        # same way). Explicit admin context: this view required an admin user.
-        try:
-            await hass.services.async_call(
-                _SCRIPT_DOMAIN,
-                SERVICE_RELOAD,
-                context=Context(user_id=user.id),
-            )
-        except Exception as err:  # noqa: BLE001 - config is saved; report reload issue
-            _LOGGER.warning(
-                "%s: wrote script %s but reload failed: %s", DOMAIN, config_key, err
-            )
-            return self.json(
-                {
-                    "result": "ok_write_reload_failed",
-                    "key": config_key,
-                    "changed": True,
-                    "backup": backup_path,
-                    "diff": diff,
-                    "previous": previous,
-                    "new": new_value,
-                },
-                status_code=status,
-            )
-
-        return self.json(
-            {
-                "result": "ok",
-                "key": config_key,
-                "changed": True,
-                "backup": backup_path,
-                "diff": diff,
-                "previous": previous,
-                "new": new_value,
-            },
-            status_code=status,
-        )
-
-
-class ScriptDeleteView(_WriteView):
-    """Delete one script, mirroring the UI's delete path.
-
-    The UI's post-write hook for deletes removes the entity-registry entry
-    and does NOT reload scripts; this view does the same.
-    """
-
-    url = API_BASE + "/scripts/write/{config_key}/delete"
-    name = "api:ha_readonly:scripts:delete"
-
-    async def post(self, request, config_key: str):
-        user = await self._authed_user(request)
-        if user is None:
-            return self.json({"error": "admin_required"}, status_code=403)
-        hass: HomeAssistant = request.app["hass"]
-
-        try:
-            return await self._handle(hass, user, request, config_key)
-        except _ViewError as err:
-            self._audit(user, request, config_key, False, err.status)
-            return self.json({"error": err.message}, status_code=err.status)
-        except Exception:  # noqa: BLE001 - never leak tracebacks to clients
-            _LOGGER.exception("%s: unhandled script delete error for %s", DOMAIN, request.path)
-            self._audit(user, request, config_key, False, 500)
-            return self.json({"error": "internal_error"}, status_code=500)
-
-    async def _handle(self, hass, user, request, config_key: str):
-        if not _validate_ident(config_key):
-            raise _ViewError(400, "invalid_id")
-
-        try:
-            body = await request.json()
-        except ValueError:
-            body = {}
-        dry_run = body.get("dry_run", True) if isinstance(body, dict) else True
-        if not isinstance(dry_run, bool):
-            raise _ViewError(400, "dry_run_must_be_boolean")
-
-        path = hass.config.path(SCRIPT_CONFIG_PATH)
-        async with self._mutation_lock:
-            current = await hass.async_add_executor_job(_read_scripts_yaml, path)
-            if config_key not in current:
-                raise _ViewError(404, "not_found")
-            previous = current.pop(config_key)
-            diff = _unified_diff(previous, None, config_key)
-
-            backup_path: str | None = None
-            entity_id: str | None = None
-            applied = False
-            if not dry_run:
-                try:
-                    backup_path = await hass.async_add_executor_job(_backup_yaml, path)
-                except FileNotFoundError:
-                    backup_path = None
-                await hass.async_add_executor_job(_write_yaml, path, current)
-                applied = True
-
-        status = 200
-        self._audit(user, request, config_key, applied, status)
-
-        if not dry_run:
-            # Mirror the UI's delete hook: drop the entity-registry entry.
-            ent_reg = er.async_get(hass)
-            entity_id = ent_reg.async_get_entity_id(
-                _SCRIPT_DOMAIN, _SCRIPT_DOMAIN, config_key
-            )
-            if entity_id is not None:
-                ent_reg.async_remove(entity_id)
-
-        return self.json(
-            {
-                "result": "dry_run" if dry_run else "ok",
-                "key": config_key,
-                "backup": backup_path,
-                "diff": diff,
-                "previous": previous,
-                "removed_entity_id": entity_id,
-            },
-            status_code=status,
-        )
-
-
-class DeviceRenameView(_WriteView):
-    """Rename a device and/or one entity's friendly name, mirroring the UI.
-
-    Uses the exact registry calls the HA frontend's rename dialogs use
-    (verified in HA 2026.6.4 source):
-    - device: ``device_registry.async_update_device(device_id,
-      name_by_user=...)``
-      (``homeassistant/components/config/device_registry.py``)
-    - entity: ``entity_registry.async_update_entity(entity_id, name=...)``
-      (``homeassistant/components/config/entity_registry.py``)
-
-    Registry-backed: no YAML file is touched, so no .bak backup applies —
-    HA persists .storage atomically itself. dry_run is a pure no-op that
-    still returns the would-be before/after for review.
-    """
-
-    url = API_BASE + "/devices/rename"
-    name = "api:ha_readonly:devices:rename"
-
-    async def post(self, request):
-        user = await self._authed_user(request)
-        if user is None:
-            return self.json({"error": "admin_required"}, status_code=403)
-        hass: HomeAssistant = request.app["hass"]
-
-        try:
-            return await self._handle(hass, user, request)
-        except _ViewError as err:
-            self._audit(user, request, "rename", False, err.status)
-            return self.json({"error": err.message}, status_code=err.status)
-        except Exception:  # noqa: BLE001 - never leak tracebacks to clients
-            _LOGGER.exception("%s: unhandled rename error for %s", DOMAIN, request.path)
-            self._audit(user, request, "rename", False, 500)
-            return self.json({"error": "internal_error"}, status_code=500)
-
-    async def _handle(self, hass, user, request):
-        try:
-            body = await request.json()
-        except ValueError:
-            body = None
-        ops = _parse_rename_body(body)
-        dry_run = body.get("dry_run", True)
-        if not isinstance(dry_run, bool):
-            raise _ViewError(400, "dry_run_must_be_boolean")
-
-        dev_reg = dr.async_get(hass)
-        ent_reg = er.async_get(hass)
-
-        renames: list[dict[str, Any]] = []
-        for target, ident, name in ops:
-            if target == "device":
-                entry = dev_reg.async_get(ident)
-                if entry is None:
-                    raise _ViewError(404, f"device_not_found: {ident}")
-                before = entry.name_by_user or entry.name
-                if not dry_run and before != name:
-                    dev_reg.async_update_device(ident, name_by_user=name)
-            else:
-                entry = ent_reg.async_get(ident)
-                if entry is None:
-                    raise _ViewError(404, f"entity_not_found: {ident}")
-                before = entry.name
-                if not dry_run and before != name:
-                    ent_reg.async_update_entity(ident, name=name)
-            renames.append(
-                {"target": target, "id": ident, "before": before, "after": name}
-            )
-
-        changed = any(r["before"] != r["after"] for r in renames)
-        status = 200
-        self._audit(
-            user,
-            request,
-            ",".join(r["id"] for r in renames),
-            applied=not dry_run and changed,
-            status=status,
-        )
-        return self.json(
-            {
-                "result": "dry_run" if dry_run else "ok",
-                "changed": changed,
-                "renames": renames,
-            },
-            status_code=status,
-        )
-
-
 _WRITE_VIEWS = (
     AutomationWriteView,
     AutomationDeleteView,
-    ScriptWriteView,
-    ScriptDeleteView,
-    DeviceRenameView,
 )
 
 
